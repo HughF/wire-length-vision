@@ -80,18 +80,20 @@ class RulerDetector:
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blurred, 50, 150)
 
+        # Use 1/10 of width as minimum length — 1/4 is too strict for rulers that
+        # don't span the full ROI or are interrupted by printed text/logos.
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi / 180,
             threshold=50,
-            minLineLength=roi_img.shape[1] // 4,
-            maxLineGap=20,
+            minLineLength=roi_img.shape[1] // 10,
+            maxLineGap=50,
         )
         if lines is None:
             raise CalibrationError("No lines found")
 
-        ruler_line = self._find_ruler_baseline(lines)
+        ruler_line = self._find_ruler_baseline(lines, roi_img.shape)
         spacings = self._find_tick_spacings(edges, ruler_line, roi_img.shape)
 
         if len(spacings) < 4:
@@ -100,13 +102,19 @@ class RulerDetector:
             )
 
         arr = np.array(spacings, dtype=float)
-        cv = arr.std() / arr.mean() if arr.mean() > 0 else 1.0
-        if cv > 0.05:
+        # Remove outliers (>2× or <0.5× the median) before assessing regularity —
+        # text and logos on the ruler body cause sporadic false peaks.
+        med = np.median(arr)
+        filtered = arr[(arr > med * 0.5) & (arr < med * 2.0)]
+        if len(filtered) < 4:
+            raise CalibrationError("Too few clean tick spacings after outlier removal")
+        cv = filtered.std() / filtered.mean() if filtered.mean() > 0 else 1.0
+        if cv > 0.45:
             raise CalibrationError(
-                f"Tick spacing too irregular (CV={cv:.3f}); check image quality"
+                f"Tick spacing too irregular after filtering (CV={cv:.3f})"
             )
 
-        px_per_mm = float(np.median(arr) / self.known_mm_per_tick)
+        px_per_mm = float(np.median(filtered) / self.known_mm_per_tick)
 
         # Translate line back to full-image coordinates if an ROI was used
         if roi:
@@ -116,27 +124,36 @@ class RulerDetector:
 
         return CalibrationResult(
             pixels_per_mm=px_per_mm,
-            tick_count=len(spacings) + 1,
+            tick_count=int(len(filtered)) + 1,
             ruler_line=ruler_line,
             method="auto",
         )
 
     def _find_ruler_baseline(
-        self, lines: np.ndarray
+        self, lines: np.ndarray, shape: Tuple[int, ...]
     ) -> Tuple[int, int, int, int]:
-        best: Optional[Tuple[int, int, int, int]] = None
-        best_len = 0.0
+        w = shape[1]
+        min_span = w * 0.20  # must span at least 20% of ROI width
+
+        # Collect all near-horizontal lines meeting the minimum span requirement.
+        candidates = []
         for line in lines:
             x1, y1, x2, y2 = line[0]
             angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-            if angle < 15 or angle > 165:  # roughly horizontal
-                length = float(np.hypot(x2 - x1, y2 - y1))
-                if length > best_len:
-                    best_len = length
-                    best = (x1, y1, x2, y2)
-        if best is None:
+            if not (angle < 5 or angle > 175):
+                continue
+            if float(np.hypot(x2 - x1, y2 - y1)) >= min_span:
+                mid_y = (y1 + y2) / 2
+                candidates.append((mid_y, x1, y1, x2, y2))
+
+        if not candidates:
             raise CalibrationError("No horizontal line found for ruler baseline")
-        return best
+
+        # The ruler's tick edge is the topmost such line — tick marks protrude
+        # upward from the ruler body, so the scale edge sits above the text/logo.
+        candidates.sort(key=lambda c: c[0])
+        _, x1, y1, x2, y2 = candidates[0]
+        return (x1, y1, x2, y2)
 
     def _find_tick_spacings(
         self,
@@ -148,29 +165,57 @@ class RulerDetector:
         h = shape[0]
 
         mid_y = (y1 + y2) // 2
-        band_h = max(20, abs(y2 - y1) + 20)
-        y_lo = max(0, mid_y - band_h)
-        y_hi = min(h, mid_y + band_h)
         x_lo = min(x1, x2)
         x_hi = max(x1, x2)
 
-        band = edges[y_lo:y_hi, x_lo:x_hi]
+        # Try sampling above the baseline first (ticks protrude upward), then
+        # below (ticks protrude downward).  Use whichever side yields more
+        # regular peaks — rulers placed at the bottom of frame often have ticks
+        # below the detected top edge.
+        tick_reach = 60
+
+        def _profile_for_band(y_lo: int, y_hi: int) -> np.ndarray:
+            b = edges[max(0, y_lo):min(h, y_hi), x_lo:x_hi]
+            if b.size == 0:
+                return np.zeros(x_hi - x_lo)
+            p = b.sum(axis=0).astype(float)
+            return uniform_filter1d(p, size=7)
+
+        prof_above = _profile_for_band(mid_y - tick_reach, mid_y)
+        prof_below = _profile_for_band(mid_y + 1, mid_y + tick_reach)
+
+        # Score each side by peak count with high threshold (strong ticks only)
+        def _peak_count(prof: np.ndarray) -> int:
+            if prof.max() == 0:
+                return 0
+            pks, _ = find_peaks(prof, height=prof.max() * 0.5, distance=15)
+            return len(pks)
+
+        use_below = _peak_count(prof_below) > _peak_count(prof_above)
+        profile = prof_below if use_below else prof_above
+        band = edges[
+            (mid_y + 1 if use_below else max(0, mid_y - tick_reach)) :
+            (min(h, mid_y + tick_reach) if use_below else mid_y),
+            x_lo:x_hi,
+        ]
         if band.size == 0:
-            raise CalibrationError("Ruler band is empty")
+            raise CalibrationError("Ruler tick band is empty")
 
         profile = band.sum(axis=0).astype(float)
-        profile = uniform_filter1d(profile, size=3)
+        profile = uniform_filter1d(profile, size=7)
 
         if profile.max() == 0:
-            raise CalibrationError("No edges in ruler band")
+            raise CalibrationError("No edges in ruler tick band")
 
+        # Use a high threshold to catch only the tallest (longest) tick marks,
+        # which are the most regularly spaced major graduations.
         peaks, _ = find_peaks(
             profile,
-            height=profile.max() * 0.3,
-            distance=5,
+            height=profile.max() * 0.5,
+            distance=15,
         )
         if len(peaks) < 2:
-            raise CalibrationError("Fewer than 2 tick peaks detected")
+            raise CalibrationError(f"Fewer than 2 tick peaks detected (found {len(peaks)})")
 
         return np.diff(peaks).tolist()
 

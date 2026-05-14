@@ -14,7 +14,7 @@ from pathlib import Path
 
 import cv2
 
-from wire_length_vision.calibration.ruler_detector import CalibrationError, RulerDetector
+from wire_length_vision.calibration.ruler_detector import CalibrationError, CalibrationResult, RulerDetector
 from wire_length_vision.measurement.skeleton_tracer import SkeletonTracer
 from wire_length_vision.output.reporter import Reporter
 from wire_length_vision.segmentation.wire_segmenter import WireSegmenter
@@ -69,6 +69,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable CLAHE brightness normalisation",
     )
+    p.add_argument(
+        "--px-per-mm",
+        type=float,
+        default=None,
+        metavar="SCALE",
+        help="Skip ruler auto-detection and use this fixed scale (pixels per mm)",
+    )
     return p.parse_args()
 
 
@@ -88,21 +95,31 @@ def main() -> int:
     logger.info("Image: %s  (%d × %d px)", img_path.name, image.shape[1], image.shape[0])
 
     # ------------------------------------------------------------------
-    # Step 1 — calibrate from ruler
+    # Step 1 — calibrate from ruler (or use fixed scale if provided)
     # ------------------------------------------------------------------
-    roi = tuple(args.roi) if args.roi else None
-    detector = RulerDetector(known_mm_per_tick=args.mm_per_tick)
-    try:
-        calibration = detector.detect(image, roi=roi)
-    except CalibrationError as exc:
-        logger.error("Calibration failed: %s", exc)
-        return 1
-    logger.info(
-        "Calibration: %.3f px/mm  (%s, %d ticks)",
-        calibration.pixels_per_mm,
-        calibration.method,
-        calibration.tick_count,
-    )
+    if args.px_per_mm is not None:
+        h, w = image.shape[:2]
+        calibration = CalibrationResult(
+            pixels_per_mm=args.px_per_mm,
+            tick_count=0,
+            ruler_line=(0, h - 1, w - 1, h - 1),
+            method="manual",
+        )
+        logger.info("Using fixed scale: %.3f px/mm", calibration.pixels_per_mm)
+    else:
+        roi = tuple(args.roi) if args.roi else None
+        detector = RulerDetector(known_mm_per_tick=args.mm_per_tick)
+        try:
+            calibration = detector.detect(image, roi=roi)
+        except CalibrationError as exc:
+            logger.error("Calibration failed: %s", exc)
+            return 1
+        logger.info(
+            "Calibration: %.3f px/mm  (%s, %d ticks)",
+            calibration.pixels_per_mm,
+            calibration.method,
+            calibration.tick_count,
+        )
 
     # ------------------------------------------------------------------
     # Step 2 — segment wires by colour
