@@ -7,6 +7,9 @@ small patch around the click, widens them by a configurable tolerance, and
 prints updated YAML ranges to stdout (or updates the config file in-place
 with --write).
 
+Uses matplotlib for the interactive window — avoids Qt/GTK backend issues
+that affect some OpenCV builds.
+
 Usage:
   python setup_colours.py panel.jpg
   python setup_colours.py panel.jpg --write --config config/colour_ranges.yaml
@@ -18,6 +21,7 @@ import sys
 from pathlib import Path
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
@@ -79,6 +83,7 @@ def main() -> int:
         return 1
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     config_path = Path(args.config)
     if config_path.exists():
@@ -87,50 +92,50 @@ def main() -> int:
     else:
         config = {"colours": {}}
 
-    display = image.copy()
     sampled: dict = {}
 
-    def on_mouse(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
+    fig, ax = plt.subplots(figsize=(14, 9))
+    fig.canvas.manager.set_window_title("Colour sampler — close window when done")
+    ax.imshow(rgb)
+    ax.set_title("Click on each wire, then type its colour name in the terminal.\nClose window when done.", fontsize=10)
+    ax.axis("off")
+
+    def on_click(event):
+        if event.inaxes is not ax or event.button != 1:
             return
-        colour_name = input(f"  Colour name for click ({x}, {y}): ").strip().lower()
+        cx, cy = int(round(event.xdata)), int(round(event.ydata))
+
+        colour_name = input(f"  Colour name for click ({cx}, {cy}): ").strip().lower()
         if not colour_name:
             return
-        entry = sample_patch(hsv, x, y)
+
+        entry = sample_patch(hsv, cx, cy)
         sampled[colour_name] = entry
         r = entry["ranges"][0]
         logger.info(
             "Sampled '%s': H %d–%d  S %d–%d  V %d–%d",
             colour_name, r[0], r[3], r[1], r[4], r[2], r[5],
         )
-        cv2.circle(display, (x, y), _PATCH_RADIUS, (0, 255, 0), 2)
-        cv2.putText(
-            display, colour_name, (x + _PATCH_RADIUS + 4, y),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA,
-        )
-        cv2.imshow("Colour sampler — press Q when done", display)
 
-    win = "Colour sampler — press Q when done"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-    cv2.imshow(win, display)
-    cv2.waitKey(1)   # pump the event loop so the window handle is created
-    cv2.setMouseCallback(win, on_mouse)
+        # Draw a marker and label on the plot
+        ax.plot(cx, cy, "o", markersize=10, markeredgecolor="lime",
+                markerfacecolor="none", markeredgewidth=2)
+        ax.text(cx + _PATCH_RADIUS + 4, cy, colour_name,
+                color="lime", fontsize=9, fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.5, pad=2, edgecolor="none"))
+        fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+
     print("Click on each wire colour then type its name in the terminal.")
-    print("Press Q in the image window when done.")
-
-    while True:
-        cv2.imshow(win, display)
-        key = cv2.waitKey(50) & 0xFF
-        if key in (ord("q"), ord("Q"), 27):
-            break
-
-    cv2.destroyAllWindows()
+    print("Close the image window when done.")
+    plt.tight_layout()
+    plt.show()   # blocks until the window is closed
 
     if not sampled:
         logger.info("No colours sampled.")
         return 0
 
-    # Merge sampled entries into config
     colours = config.setdefault("colours", {})
     for name, entry in sampled.items():
         colours[name] = entry
