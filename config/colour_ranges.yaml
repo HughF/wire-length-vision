@@ -1,0 +1,38 @@
+# HSV colour range definitions for wire segmentation.
+# Each entry is [h_lo, s_lo, v_lo, h_hi, s_hi, v_hi].
+# Red wraps around H=0, so it needs two ranges OR'd together.
+# Adjust these for your specific wire colours and lighting conditions.
+# Run: python setup_colours.py <image> to sample ranges interactively.
+
+colours:
+  red:
+    ranges:
+      - [0,   100,  50,  10,  255, 255]   # lower red
+      - [170, 100,  50,  180, 255, 255]   # upper red (hue wrap)
+  blue:
+    ranges:
+      - [100, 80,   50,  130, 255, 255]
+  green:
+    ranges:
+      - [40,  60,   50,  80,  255, 255]
+  yellow:
+    ranges:
+      - [20,  100,  100, 35,  255, 255]
+  orange:
+    ranges:
+      - [10,  100,  100, 20,  255, 255]
+  white:
+    ranges:
+      - [0,   0,    200, 180, 30,  255]
+  black:
+    ranges:
+      - [0,   0,    0,   180, 50,  50]
+  brown:
+    ranges:
+      - [10,  50,   20,  20,  200, 100]
+  grey:
+    ranges:
+      - [0,   0,    80,  180, 40,  180]
+  purple:
+    ranges:
+      - [130, 50,   50,  160, 255, 255]
