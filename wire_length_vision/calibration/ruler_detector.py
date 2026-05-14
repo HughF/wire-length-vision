@@ -238,6 +238,7 @@ class RulerDetector:
             "Click two points at a known distance apart — press ESC to cancel",
         )
         cv2.imshow("Calibration", display)
+        cv2.waitKey(1)   # pump event loop so window handle is valid before setMouseCallback
         cv2.setMouseCallback("Calibration", mouse_cb)
 
         while True:

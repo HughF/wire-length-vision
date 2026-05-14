@@ -110,13 +110,16 @@ def main() -> int:
         )
         cv2.imshow("Colour sampler — press Q when done", display)
 
-    cv2.namedWindow("Colour sampler — press Q when done", cv2.WINDOW_NORMAL)
-    cv2.imshow("Colour sampler — press Q when done", display)
-    cv2.setMouseCallback("Colour sampler — press Q when done", on_mouse)
+    win = "Colour sampler — press Q when done"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.imshow(win, display)
+    cv2.waitKey(1)   # pump the event loop so the window handle is created
+    cv2.setMouseCallback(win, on_mouse)
     print("Click on each wire colour then type its name in the terminal.")
     print("Press Q in the image window when done.")
 
     while True:
+        cv2.imshow(win, display)
         key = cv2.waitKey(50) & 0xFF
         if key in (ord("q"), ord("Q"), 27):
             break
