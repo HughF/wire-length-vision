@@ -92,23 +92,54 @@ def main() -> int:
     else:
         config = {"colours": {}}
 
-    sampled: dict = {}
+    # Collect click positions during the window session; prompt for names after.
+    # (input() cannot be called inside a matplotlib event callback.)
+    clicks: list = []
 
     fig, ax = plt.subplots(figsize=(14, 9))
     fig.canvas.manager.set_window_title("Colour sampler — close window when done")
     ax.imshow(rgb)
-    ax.set_title("Click on each wire, then type its colour name in the terminal.\nClose window when done.", fontsize=10)
+    ax.set_title(
+        "Click on one spot per wire colour, then close this window.\n"
+        "You will be asked to name each click in the terminal.",
+        fontsize=10,
+    )
     ax.axis("off")
 
     def on_click(event):
+        # Ignore clicks while the zoom/pan toolbar is active
+        if fig.canvas.toolbar and fig.canvas.toolbar.mode != "":
+            return
         if event.inaxes is not ax or event.button != 1:
             return
         cx, cy = int(round(event.xdata)), int(round(event.ydata))
+        n = len(clicks) + 1
+        clicks.append((cx, cy))
+        ax.plot(cx, cy, "o", markersize=10, markeredgecolor="lime",
+                markerfacecolor="none", markeredgewidth=2)
+        ax.text(cx + _PATCH_RADIUS + 4, cy, str(n),
+                color="lime", fontsize=10, fontweight="bold",
+                bbox=dict(facecolor="black", alpha=0.5, pad=2, edgecolor="none"))
+        fig.canvas.draw_idle()
 
-        colour_name = input(f"  Colour name for click ({cx}, {cy}): ").strip().lower()
+    fig.canvas.mpl_connect("button_press_event", on_click)
+
+    print("Click on one spot per wire colour, then close the window.")
+    plt.tight_layout()
+    plt.show()  # blocks until the window is closed
+
+    if not clicks:
+        logger.info("No clicks recorded.")
+        return 0
+
+    # Now prompt for names in the terminal (safe — GUI loop has exited)
+    sampled: dict = {}
+    print(f"\n{len(clicks)} click(s) recorded. Enter a colour name for each:")
+    for i, (cx, cy) in enumerate(clicks, 1):
+        colour_name = input(f"  [{i}] click at ({cx}, {cy}) — colour name: ").strip().lower()
         if not colour_name:
-            return
-
+            print(f"  skipped.")
+            continue
         entry = sample_patch(hsv, cx, cy)
         sampled[colour_name] = entry
         r = entry["ranges"][0]
@@ -117,23 +148,8 @@ def main() -> int:
             colour_name, r[0], r[3], r[1], r[4], r[2], r[5],
         )
 
-        # Draw a marker and label on the plot
-        ax.plot(cx, cy, "o", markersize=10, markeredgecolor="lime",
-                markerfacecolor="none", markeredgewidth=2)
-        ax.text(cx + _PATCH_RADIUS + 4, cy, colour_name,
-                color="lime", fontsize=9, fontweight="bold",
-                bbox=dict(facecolor="black", alpha=0.5, pad=2, edgecolor="none"))
-        fig.canvas.draw_idle()
-
-    fig.canvas.mpl_connect("button_press_event", on_click)
-
-    print("Click on each wire colour then type its name in the terminal.")
-    print("Close the image window when done.")
-    plt.tight_layout()
-    plt.show()   # blocks until the window is closed
-
     if not sampled:
-        logger.info("No colours sampled.")
+        logger.info("No colours named.")
         return 0
 
     colours = config.setdefault("colours", {})
